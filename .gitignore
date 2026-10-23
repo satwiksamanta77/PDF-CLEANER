@@ -1,0 +1,13 @@
+# Outputs (regenerated)
+OUTPUT/
+
+# Archived debug/old files (local only)
+_old_unused/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
