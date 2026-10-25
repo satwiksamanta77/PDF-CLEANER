@@ -1,6 +1,9 @@
 # Outputs (regenerated)
 OUTPUT/
 
+# User-uploaded PDFs via the app's Upload mode (local only)
+UPLOADS/
+
 # Archived debug/old files (local only)
 _old_unused/
 

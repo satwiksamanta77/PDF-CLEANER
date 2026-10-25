@@ -12,8 +12,11 @@ from clean_for_canva import clean_pdf, v2_name
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(BASE, "PDFS TO CLEAN")
+UPLOAD_DIR = os.path.join(BASE, "UPLOADS")
 OUT_DIR = os.path.join(BASE, "OUTPUT")
 os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+MAX_UPLOAD = 100 * 1024 * 1024  # 100 MB
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -60,8 +63,18 @@ HTML = r"""<!DOCTYPE html>
 
   <div class="card">
     <h2>1. Choose PDF</h2>
-    <select id="pdf"></select>
-    <p class="count" id="count"></p>
+    <div class="preset">
+      <button type="button" id="mList" class="active">From list</button>
+      <button type="button" id="mUpload">Upload a PDF</button>
+    </div>
+    <div id="listMode">
+      <select id="pdf"></select>
+      <p class="count" id="count"></p>
+    </div>
+    <div id="uploadMode" style="display:none">
+      <input type="file" id="upfile" accept=".pdf,application/pdf" style="width:100%;padding:10px 12px;background:#0f1117;color:#e8eaf0;border:1px solid #3a4258;border-radius:8px;font-size:.95rem">
+      <p class="count">Uploaded PDFs are stored in the UPLOADS folder and cleaned the same way. Nothing leaves this computer.</p>
+    </div>
   </div>
 
   <div class="card">
@@ -106,6 +119,21 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const sel = document.getElementById('pdf');
 const cnt = document.getElementById('count');
+const mList = document.getElementById('mList');
+const mUpload = document.getElementById('mUpload');
+const listMode = document.getElementById('listMode');
+const uploadMode = document.getElementById('uploadMode');
+const upfile = document.getElementById('upfile');
+let mode = 'list';
+function setMode(m) {
+  mode = m;
+  mList.classList.toggle('active', m === 'list');
+  mUpload.classList.toggle('active', m === 'upload');
+  listMode.style.display = m === 'list' ? 'block' : 'none';
+  uploadMode.style.display = m === 'upload' ? 'block' : 'none';
+}
+mList.onclick = () => setMode('list');
+mUpload.onclick = () => setMode('upload');
 const ink = document.getElementById('ink');
 const marks = document.getElementById('marks');
 const hindi = document.getElementById('hindi');
@@ -139,14 +167,30 @@ ink.onchange = marks.onchange = hindi.onchange = () => {
 };
 
 go.onclick = async () => {
-  const name = sel.value;
-  if (!name) return;
+  let name = sel.value;
+  let src = 'list';
+  if (mode === 'upload') {
+    if (!upfile.files.length) { st.className = 'err'; st.textContent = 'Error: pick a PDF file to upload first.'; return; }
+    src = 'upload';
+  } else if (!name) {
+    return;
+  }
   go.disabled = true;
   dl.style.display = 'none';
   st.className = 'run';
   st.textContent = 'Cleaning... (Hindi pages can take a few seconds)';
   try {
-    const body = new URLSearchParams({ file: name, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0', hindi: hindi.checked ? '1' : '0' });
+    if (mode === 'upload') {
+      st.textContent = 'Uploading...';
+      const fd = new FormData();
+      fd.append('pdf', upfile.files[0]);
+      const ur = await fetch('/api/upload', { method: 'POST', body: fd });
+      const uj = await ur.json();
+      if (uj.error) throw new Error(uj.error);
+      name = uj.file;
+      st.textContent = 'Cleaning... (Hindi pages can take a few seconds)';
+    }
+    const body = new URLSearchParams({ file: name, src: src, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0', hindi: hindi.checked ? '1' : '0' });
     const r = await fetch('/api/clean', { method: 'POST', body });
     const j = await r.json();
     if (j.error) throw new Error(j.error);
@@ -211,19 +255,78 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not found")
 
+    def _handle_upload(self):
+        # Manual single-file multipart parse (stdlib only). The body
+        # is read as RAW BYTES -- decoding it as UTF-8 would corrupt
+        # a binary PDF.
+        import re
+        ctype = self.headers.get("Content-Type", "")
+        m = re.search(r"boundary=([^;]+)", ctype)
+        if not m:
+            self._json({"error": "Upload must be multipart/form-data"})
+            return
+        boundary = m.group(1).strip().strip('"').encode()
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0 or length > MAX_UPLOAD:
+            self._json({"error": "File too large (max 100 MB) or empty"})
+            return
+        raw = self.rfile.read(length)
+        delim = b"--" + boundary
+        filename = None
+        filedata = None
+        for part in raw.split(delim):
+            if not part or part in (b"--", b"--\r\n"):
+                continue
+            if part.startswith(b"\r\n"):
+                part = part[2:]
+            head, sep, data = part.partition(b"\r\n\r\n")
+            if not sep:
+                continue
+            fm = re.search(rb'filename="([^"]*)"', head)
+            if not fm:
+                continue
+            if data.endswith(b"\r\n"):
+                data = data[:-2]
+            filename = fm.group(1).decode("utf-8", "ignore")
+            filedata = data
+            break
+        if filedata is None or not filename:
+            self._json({"error": "No PDF file found in upload"})
+            return
+        if not filedata.startswith(b"%PDF-"):
+            self._json({"error": "Uploaded file is not a PDF"})
+            return
+        safe = os.path.basename(filename)
+        safe = "".join(c for c in safe if c.isalnum() or c in " ._-")
+        if not safe.lower().endswith(".pdf"):
+            safe += ".pdf"
+        if not safe or safe == ".pdf":
+            self._json({"error": "Invalid filename"})
+            return
+        dest = os.path.join(UPLOAD_DIR, safe)
+        with open(dest, "wb") as f:
+            f.write(filedata)
+        self._json({"ok": True, "file": safe})
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/clean":
+        path = urlparse(self.path).path
+        if path == "/api/upload":
+            self._handle_upload()
+            return
+        if path != "/api/clean":
             self._send(404, b"Not found")
             return
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8")
         q = parse_qs(body)
         name = unquote(q.get("file", [""])[0])
+        src_kind = q.get("src", ["list"])[0]
         remove_ink = q.get("ink", ["1"])[0] == "1"
         remove_marks = q.get("marks", ["1"])[0] == "1"
         remove_hindi = q.get("hindi", ["1"])[0] == "1"
         safe = os.path.basename(name)
-        src = os.path.join(PDF_DIR, safe)
+        base_dir = UPLOAD_DIR if src_kind == "upload" else PDF_DIR
+        src = os.path.join(base_dir, safe)
         if not os.path.isfile(src):
             self._json({"error": "PDF not found: " + safe})
             return

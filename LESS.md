@@ -45,3 +45,10 @@ TRIGGER: old code crashed off Windows → RULE: no platform font paths; base-14 
 TRIGGER: Canva check flags a join/collision → RULE: arbitrate against local renders/dict/stream + original comparison before any code change; MuPDF extraction and Canva's text panel both collapse real spaces and do not predict Canva's visual rendering.
 TRIGGER: figure drawn on a template panel dropped by the 80x80 ink gate → RULE: an ink group overlapping an e1 panel by ≥30% of its bbox qualifies under 80x80, but only when its long paths are black (coloured working on a panel stays removed); never let a page-background fill expand a figure group.
 TRIGGER: sweep upload fails on approval timeout → RULE: run Canva checks singly with the user present; freeze each sweep set under a unique suffix and never reuse one.
+TRIGGER: mark inside a long curved path's bbox kept as a figure member → RULE: keep members by their OWN rect matching a keep rect, never by centre-in-bbox; a curved arrow's bbox spans far more than the curve.
+TRIGGER: box/cross-out drawn over an option kept as a figure side → RULE: the text-overlap exclusion applies to LONG members too; a real figure side never overlaps question/option text.
+TRIGGER: note letters kept next to an excluded long path → RULE: near-long figure labels anchor to KEPT longs only.
+TRIGGER: whole-page keep broke when the keep form changed → RULE: use an explicit "ALL" sentinel for a text-free vector-only page.
+TRIGGER: teacher working over an image-based question kept as figure content → RULE: whole-page keep only when the page has no non-template image; template rects are images repeating on ≥50% of the file's pages.
+TRIGGER: Hindi block's math equation survives Hindi deletion and prints twice → RULE: delete math-only blocks below a Hindi baseline that duplicate an English line above it (tail rule), and widen the superscript window to first_deva − 16.
+TRIGGER: user wants to upload a PDF, not only pick from the list → RULE: app.py Upload mode with a raw-bytes multipart parse (never UTF-8-decode a PDF body), UPLOADS/ dir separate from PDFS TO CLEAN/, src selector on /api/clean, 100 MB cap.

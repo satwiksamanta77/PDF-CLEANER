@@ -266,3 +266,91 @@ Known minor gaps: M3 p16's small cone sketch still missing (no safe rule —
 any cluster distance catching it at 32pt also keeps Geo p14's working at
 11pt); Geo p24 header "Apollonius theorem ():" empty parens (cosmetic,
 user not yet answered); Stats p18 table headers render red by rule.
+
+## 21. v29 fix round (2026-10-25 evening) — user-reported Canva designs + upload
+
+The user (20:23 IST) sent 6 Canva designs with problems and asked, highest
+priority, for correct questions and options; plus a frontend upload option
+("choose from the list of pdf or manually upload pdf too"); then push so
+they can test on other similar PDFs. Diagnosis (browser, read-only, all 6
+links opened): most reported breakage was an OLDER build (V3: text-only
+shift, drawings left behind; values in drawings/rasters removed) — the
+pushed v28 file is already correct there (Mens 3D-4 p13 root-fractions,
+H&D p8 values). Real v29 defects, all fixed and render-verified:
+
+- Hindi math orphans: a Hindi block's math equation survives Hindi deletion
+  (it is math, not Devanagari) and prints twice (Surds p32); Hindi-line
+  superscript blocks raised ~9pt above the Hindi baseline escape the
+  deletion window (Algebra p7 stray red 3/2/2/3). Fixes in
+  `_delete_hindi_blocks`: 'sup' window widened to first_deva − 16.0 and to
+  blocks 3–15pt BELOW a Hindi baseline (English superscripts sit ≥19pt
+  above any Hindi baseline, so the window cannot catch them); 'sup'
+  x-range is now the Hindi BLOCK's union range (Surds p32's second Hindi
+  line ends at x424 but its orphans sit at x466/x522); new 'tail' rule —
+  a math-only block 0–15pt below a Hindi baseline, same column, ≥12pt
+  above first_opt, outside grid zones, whose normalized text equals or
+  is a substring (len ≥ 2) of an English line above first_deva, goes
+  with the Hindi block.
+- Figure-gate text rows (`_ink_figure_rects`): a chained handwritten
+  solution (Algebra p13: 449×212, 186 members) passed the size/long gates
+  and was kept whole. Small members (<25×25) are clustered by y-centre
+  (6pt); ≥3 rows of ≥5 strokes spanning ≥60pt holding >50% of the group
+  means WRITING, not a figure (Geo p14's triangle: 3 rows but ~30% — kept).
+- Text-overlap exclusion: a mark sitting ON Q/O text is never kept, even
+  as a figure label — first small members (Geo p19 tick), then extended
+  to LONG members (a box around an option, a cross-out over one, are long
+  paths; a real figure side never overlaps Q/O text). Near-long labels
+  must anchor to a KEPT long, not to an excluded one (Surds p26's "c² ="
+  note survived next to the excluded arrow).
+- Keep by own rect, not centre-in-bbox (`should_remove_drawing`): a long
+  curved arrow's bbox spans a huge area, and centre-in-bbox kept every
+  mark inside it (Surds p26's "b)" cross-out sits inside the arrow's
+  bbox but far from the curve). A member is kept only when its OWN rect
+  matches a keep rect (0.5pt). Whole-page keep is now the explicit
+  sentinel "ALL" (text-free, vector-only page), not [page.rect].
+- Hindi paren fills (`_hindi_mark`): Hindi-sentence parentheses are drawn
+  as FILLED paths; a fill ≤22 high, ≤250 wide, centred in a Hindi line's
+  band (baseline −12..+5) and inside its x-range is a Hindi mark
+  (Algebra p13's red paren pairs gone; the question's blue parens stay).
+- Image pages (`_ink_figure_rects` + `clean_pdf`): whole-page keep now
+  applies only when the text-free page has no CONTENT image. Template
+  rects (images on ≥50% of the file's pages) are computed once per file;
+  a text-free page with a non-template image falls through to normal
+  grouping (Algebra p19: question+options are image strips, red solution
+  on top now removed; Mens 2D p13/p23 unchanged, template-only pages).
+
+Marks fixed in this round (Q/O correct on all): Surds p26 "b)" cross-out,
+circle over "c)", arrow and "c² =" note all gone; Surds p22 cross-out
+over "a)" and working below gone (one small arrow in empty space
+remains); Algebra p24 red box around d) gone (crossed-out working below
+options remains, empty space). Regressions re-verified: Geo p14 triangle,
+Geo p19 trapezoid, Mens 2D p13/p23 figures, Mens 3D p16 cylinder,
+Algebra p13, Surds p32 — all intact.
+
+**Frontend upload (`app.py`):** "From list | Upload a PDF" toggle.
+`/api/upload` reads the request body as RAW BYTES and parses the
+single-file multipart part manually (stdlib only — the old `do_POST`
+decoded as UTF-8, which would corrupt a binary PDF); sanitized basename
+saved to a separate `UPLOADS/` dir (not `PDFS TO CLEAN/`); `/api/clean`
+gains a `src` selector (list → PDF_DIR, upload → UPLOADS/); output still
+to `OUTPUT/`, downloads via `/api/download`; 100 MB cap; server stays
+127.0.0.1-only. Verified end to end with curl: upload → clean
+(src=upload, 15 pages, 609 removed — same as the CLI regen) → download
+(200, 15 pages). `.gitignore` gains `UPLOADS/`.
+
+**Full v29 verification:** regen 18/18 to `_work/v29all/` (all exit 0);
+audit CLEAN (gap WORSE 0, shift MOVED 0, colour 1 known Mens 3D-4 p5 '³'
+footer artifact, space MISSes 4 stale V2 only; 4 NEG-SRC pages match
+their source gaps within 0.05). Known minor residues (Q/O correct, do
+not chase without a cheap rule): Surds p26 tiny red "1 1 1" fragments
+above the options (non-ink-candidate strokes); Surds p14 red "1" +
+fraction bar + "x =?" in the gap; Geo p19 green scratch grid and Geo
+p29 red sketch below the options (figure-shaped scratch in empty
+space). Source-inherent, NOT defects (do not "fix"): Mens 3D-4 p2 has
+no c/d anywhere in the source (options overflowed off the slide);
+Geometry p4 b=d=5.6 cm is a source typo; Algebra p7 d) value "0" wraps
+to the next line in the source; P&C pp5–8 bare markers are open-exercise
+answer slots, its MCQ options are all present; H&D values live in
+drawings/rasters; Algebra p19's options are an image with values but no
+visible markers, and image questions stay black (images are preserved
+whole, never recoloured).
