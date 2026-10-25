@@ -12,8 +12,11 @@ from clean_for_canva import clean_pdf, v2_name
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.path.join(BASE, "PDFS TO CLEAN")
+UPLOAD_DIR = os.path.join(BASE, "UPLOADS")
 OUT_DIR = os.path.join(BASE, "OUTPUT")
 os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+MAX_UPLOAD = 100 * 1024 * 1024  # 100 MB
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -30,15 +33,6 @@ HTML = r"""<!DOCTYPE html>
   .card{background:#181c27;border:1px solid #2a3040;border-radius:12px;padding:20px;margin-bottom:16px}
   .card h2{font-size:1rem;margin-bottom:12px;color:#c9d1e0}
   select{width:100%;padding:10px 12px;background:#0f1117;color:#e8eaf0;border:1px solid #3a4258;border-radius:8px;font-size:.95rem}
-  .row{display:flex;gap:10px}
-  .row select{flex:1}
-  .upbtn{display:flex;align-items:center;padding:10px 14px;background:#232938;color:#c9d1e0;border:1px dashed #3a4258;border-radius:8px;cursor:pointer;font-size:.9rem;white-space:nowrap}
-  .upbtn:hover{border-color:#7dd3fc;color:#e0f2fe}
-  .upbtn.busy{opacity:.6;cursor:wait}
-  #pickCard.drag{border-color:#7dd3fc}
-  .upmsg{display:none;margin-top:8px;font-size:.85rem}
-  .upmsg.ok{display:block;color:#86efac}
-  .upmsg.err{display:block;color:#fca5a5}
   .opts{display:flex;flex-direction:column;gap:10px}
   .opt{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#0f1117;border:1px solid #2a3040;border-radius:8px;cursor:pointer}
   .opt:hover{border-color:#7dd3fc55}
@@ -67,14 +61,20 @@ HTML = r"""<!DOCTYPE html>
   <h1>Canva PDF Cleaner</h1>
   <p class="sub">Fixes text overlap when uploading to Canva. Optionally removes handwriting &amp; watermarks.</p>
 
-  <div class="card" id="pickCard">
+  <div class="card">
     <h2>1. Choose PDF</h2>
-    <div class="row">
-      <select id="pdf"></select>
-      <label class="upbtn" id="upbtn">⬆ Upload PDF<input type="file" id="upfile" accept="application/pdf,.pdf" hidden></label>
+    <div class="preset">
+      <button type="button" id="mList" class="active">From list</button>
+      <button type="button" id="mUpload">Upload a PDF</button>
     </div>
-    <p class="count" id="count"></p>
-    <p class="upmsg" id="upmsg"></p>
+    <div id="listMode">
+      <select id="pdf"></select>
+      <p class="count" id="count"></p>
+    </div>
+    <div id="uploadMode" style="display:none">
+      <input type="file" id="upfile" accept=".pdf,application/pdf" style="width:100%;padding:10px 12px;background:#0f1117;color:#e8eaf0;border:1px solid #3a4258;border-radius:8px;font-size:.95rem">
+      <p class="count">Uploaded PDFs are stored in the UPLOADS folder and cleaned the same way. Nothing leaves this computer.</p>
+    </div>
   </div>
 
   <div class="card">
@@ -119,6 +119,21 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const sel = document.getElementById('pdf');
 const cnt = document.getElementById('count');
+const mList = document.getElementById('mList');
+const mUpload = document.getElementById('mUpload');
+const listMode = document.getElementById('listMode');
+const uploadMode = document.getElementById('uploadMode');
+const upfile = document.getElementById('upfile');
+let mode = 'list';
+function setMode(m) {
+  mode = m;
+  mList.classList.toggle('active', m === 'list');
+  mUpload.classList.toggle('active', m === 'upload');
+  listMode.style.display = m === 'list' ? 'block' : 'none';
+  uploadMode.style.display = m === 'upload' ? 'block' : 'none';
+}
+mList.onclick = () => setMode('list');
+mUpload.onclick = () => setMode('upload');
 const ink = document.getElementById('ink');
 const marks = document.getElementById('marks');
 const hindi = document.getElementById('hindi');
@@ -128,61 +143,14 @@ const go = document.getElementById('go');
 const st = document.getElementById('status');
 const dl = document.getElementById('dl');
 const dlLink = document.getElementById('dlLink');
-const pickCard = document.getElementById('pickCard');
-const upbtn = document.getElementById('upbtn');
-const upfile = document.getElementById('upfile');
-const upmsg = document.getElementById('upmsg');
 
-const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-async function loadList(selectName) {
+async function loadList() {
   const r = await fetch('/api/list');
   const files = await r.json();
-  sel.innerHTML = files.map(f => `<option value="${encodeURIComponent(f)}">${esc(f)}</option>`).join('');
+  sel.innerHTML = files.map(f => `<option value="${encodeURIComponent(f)}">${f}</option>`).join('');
   cnt.textContent = files.length + ' PDF(s) in PDFS TO CLEAN folder';
-  if (selectName) {
-    const enc = encodeURIComponent(selectName);
-    if ([...sel.options].some(o => o.value === enc)) sel.value = enc;
-  }
 }
 loadList();
-
-function setUpMsg(text, cls) {
-  upmsg.textContent = text;
-  upmsg.className = cls ? 'upmsg ' + cls : 'upmsg';
-}
-
-async function uploadPdf(file) {
-  if (!file) return;
-  if (!/\.pdf$/i.test(file.name)) {
-    setUpMsg('Not a PDF: ' + file.name, 'err');
-    return;
-  }
-  setUpMsg('Uploading ' + file.name + '…');
-  upbtn.classList.add('busy');
-  try {
-    const r = await fetch('/api/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file });
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    await loadList(j.saved);
-    setUpMsg('Uploaded as "' + j.saved + '" — selected below.', 'ok');
-  } catch (e) {
-    setUpMsg('Upload failed: ' + e.message, 'err');
-  } finally {
-    upbtn.classList.remove('busy');
-  }
-}
-upfile.onchange = () => { uploadPdf(upfile.files[0]); upfile.value = ''; };
-
-['dragover', 'dragenter'].forEach(ev => pickCard.addEventListener(ev, e => {
-  e.preventDefault();
-  pickCard.classList.add('drag');
-}));
-['dragleave', 'drop'].forEach(ev => pickCard.addEventListener(ev, e => {
-  e.preventDefault();
-  pickCard.classList.remove('drag');
-}));
-pickCard.addEventListener('drop', e => uploadPdf(e.dataTransfer.files[0]));
 
 function setPreset(all) {
   pAll.classList.toggle('active', all);
@@ -199,14 +167,30 @@ ink.onchange = marks.onchange = hindi.onchange = () => {
 };
 
 go.onclick = async () => {
-  const name = sel.value;
-  if (!name) return;
+  let name = sel.value;
+  let src = 'list';
+  if (mode === 'upload') {
+    if (!upfile.files.length) { st.className = 'err'; st.textContent = 'Error: pick a PDF file to upload first.'; return; }
+    src = 'upload';
+  } else if (!name) {
+    return;
+  }
   go.disabled = true;
   dl.style.display = 'none';
   st.className = 'run';
   st.textContent = 'Cleaning... (Hindi pages can take a few seconds)';
   try {
-    const body = new URLSearchParams({ file: name, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0', hindi: hindi.checked ? '1' : '0' });
+    if (mode === 'upload') {
+      st.textContent = 'Uploading...';
+      const fd = new FormData();
+      fd.append('pdf', upfile.files[0]);
+      const ur = await fetch('/api/upload', { method: 'POST', body: fd });
+      const uj = await ur.json();
+      if (uj.error) throw new Error(uj.error);
+      name = uj.file;
+      st.textContent = 'Cleaning... (Hindi pages can take a few seconds)';
+    }
+    const body = new URLSearchParams({ file: name, src: src, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0', hindi: hindi.checked ? '1' : '0' });
     const r = await fetch('/api/clean', { method: 'POST', body });
     const j = await r.json();
     if (j.error) throw new Error(j.error);
@@ -271,43 +255,63 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not found")
 
-    MAX_UPLOAD = 200 * 1024 * 1024
-
-    def _handle_upload(self, q):
-        name = unquote(q.get("name", [""])[0])
-        safe = os.path.basename(name.replace("\\", "/"))
-        for ch in '<>:"|?*':  # characters Windows forbids in file names
-            safe = safe.replace(ch, "_")
-        if not safe or not safe.lower().endswith(".pdf"):
-            self._json({"error": "Only .pdf files can be uploaded"})
+    def _handle_upload(self):
+        # Manual single-file multipart parse (stdlib only). The body
+        # is read as RAW BYTES -- decoding it as UTF-8 would corrupt
+        # a binary PDF.
+        import re
+        ctype = self.headers.get("Content-Type", "")
+        m = re.search(r"boundary=([^;]+)", ctype)
+        if not m:
+            self._json({"error": "Upload must be multipart/form-data"})
             return
+        boundary = m.group(1).strip().strip('"').encode()
         length = int(self.headers.get("Content-Length", 0))
-        if length <= 0:
-            self._json({"error": "Empty upload"})
+        if length <= 0 or length > MAX_UPLOAD:
+            self._json({"error": "File too large (max 100 MB) or empty"})
             return
-        if length > self.MAX_UPLOAD:
-            self._json({"error": "File too large (max 200 MB)"})
+        raw = self.rfile.read(length)
+        delim = b"--" + boundary
+        filename = None
+        filedata = None
+        for part in raw.split(delim):
+            if not part or part in (b"--", b"--\r\n"):
+                continue
+            if part.startswith(b"\r\n"):
+                part = part[2:]
+            head, sep, data = part.partition(b"\r\n\r\n")
+            if not sep:
+                continue
+            fm = re.search(rb'filename="([^"]*)"', head)
+            if not fm:
+                continue
+            if data.endswith(b"\r\n"):
+                data = data[:-2]
+            filename = fm.group(1).decode("utf-8", "ignore")
+            filedata = data
+            break
+        if filedata is None or not filename:
+            self._json({"error": "No PDF file found in upload"})
             return
-        head = self.rfile.read(min(length, 1024))
-        if b"%PDF" not in head:
-            self._json({"error": "Not a valid PDF file"})
+        if not filedata.startswith(b"%PDF-"):
+            self._json({"error": "Uploaded file is not a PDF"})
             return
-        rest = self.rfile.read(length - len(head))
-        stem, ext = os.path.splitext(safe)
-        candidate = safe
-        n = 1
-        while os.path.exists(os.path.join(PDF_DIR, candidate)):
-            candidate = f"{stem} ({n}){ext}"
-            n += 1
-        os.makedirs(PDF_DIR, exist_ok=True)
-        with open(os.path.join(PDF_DIR, candidate), "wb") as f:
-            f.write(head + rest)
-        self._json({"ok": True, "saved": candidate})
+        safe = os.path.basename(filename)
+        safe = "".join(c for c in safe if c.isalnum() or c in " ._-")
+        if not safe.lower().endswith(".pdf"):
+            safe += ".pdf"
+        if not safe or safe == ".pdf":
+            self._json({"error": "Invalid filename"})
+            return
+        dest = os.path.join(UPLOAD_DIR, safe)
+        with open(dest, "wb") as f:
+            f.write(filedata)
+        self._json({"ok": True, "file": safe})
 
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/upload":
-            self._handle_upload(parse_qs(urlparse(self.path).query))
+            self._handle_upload()
             return
         if path != "/api/clean":
             self._send(404, b"Not found")
@@ -316,11 +320,13 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8")
         q = parse_qs(body)
         name = unquote(q.get("file", [""])[0])
+        src_kind = q.get("src", ["list"])[0]
         remove_ink = q.get("ink", ["1"])[0] == "1"
         remove_marks = q.get("marks", ["1"])[0] == "1"
         remove_hindi = q.get("hindi", ["1"])[0] == "1"
         safe = os.path.basename(name)
-        src = os.path.join(PDF_DIR, safe)
+        base_dir = UPLOAD_DIR if src_kind == "upload" else PDF_DIR
+        src = os.path.join(base_dir, safe)
         if not os.path.isfile(src):
             self._json({"error": "PDF not found: " + safe})
             return

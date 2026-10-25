@@ -208,73 +208,24 @@ def _ink_is_candidate(d: dict) -> bool:
     return False
 
 
-def _ink_polylines(d, tol=1.5):
-    """Chain one drawing's path items into polylines [(start, end, pts)]."""
-    pls = []
-    cur = None
-    for it in d.get("items", []):
-        op = it[0]
-        if op == "l":
-            s, e = it[1], it[2]
-        elif op == "c":
-            s, e = it[1], it[4]
-        elif op in ("v", "y"):
-            s, e = None, it[3]
-        elif op == "re":
-            r = it[1]
-            a, b = pymupdf.Point(r.x0, r.y0), pymupdf.Point(r.x1, r.y1)
-            pls.append((a, b, [a, pymupdf.Point(b.x, a.y), b]))
-            cur = None
-            continue
-        elif op == "qu":
-            q = it[1]
-            pls.append((q.ul, q.lr, [q.ul, q.ur, q.lr]))
-            cur = None
-            continue
-        else:
-            cur = None
-            continue
-        if cur is not None and (s is None or max(abs(s.x - cur[1].x),
-                                                 abs(s.y - cur[1].y)) <= tol):
-            cur[1] = e
-            cur[2].append(e)
-        else:
-            if cur:
-                pls.append((cur[0], cur[1], cur[2]))
-            st = s if s is not None else e
-            cur = [st, e, [st, e]]
-    if cur:
-        pls.append((cur[0], cur[1], cur[2]))
-    return pls
-
-
-def _ink_figure_rects(drawings, page) -> list:
+def _ink_figure_rects(drawings, page, template_rects=None):
     """Bboxes of hand-drawn FIGURES to exempt from ink removal.
 
-    v29 rewrite. The v28 gate chained ALL ink candidates by touching, so a
-    kept figure dragged its annotation chains along (Mens 3D C4 p3: the
-    red "2.5|8" notes and green circle-marks survived ON the ball figure;
-    H&D p14: the cyan "sqrt3=1.732" working survived on the triangle), and
-    any big teacher working qualified as a "figure" on its own (APGP p12's
-    purple option box survived and the shifted options printed over it;
-    APGP p27's red arrow + formula working survived). New rules:
+    Returns "ALL" for a whole-page keep (text-free, vector-only
+    page), else the kept members' rects (should_remove_drawing
+    matches a member by its own rect, not by centre-in-bbox).
 
-    - Chaining is PER COLOUR: an annotation in another colour that merely
-      touches a figure neither shares its exemption nor drags it down.
-    - A colour group qualifies with >= 2 long paths (>= 40pt) AND one of:
-      bbox >= 80x80; >= 30% on an e1 panel with BLACK long paths (v28);
-      or a CLOSED CYCLE of endpoint-chained strokes (small squares and
-      triangles like Mens 3D C4 p10's 54x54 square, too small for 80x80
-      and off-panel -- killed by every version until now).
-    - A group that OVERLAPS question or option TEXT is teacher marking,
-      never a figure: real question figures sit in the figure column and
-      never print over the question or the options. This alone kills the
-      purple answer box and circles drawn around options.
-    - Small BLACK strokes inside or beside (25pt) a qualifying figure are
-      its labels (H&D p1's angle labels beside the red triangles); small
-      COLOURED strokes there are marks (Mens 3D C4 p3's green circles).
-    - Text-free pages keep all ink (unchanged).
-    Exemption applies ONLY to ink removal, never to watermark removal.
+    The pen pass removes ink strokes, but on some pages the figures
+    themselves are hand-drawn in the same pen (Mens 2D p13/p23: two
+    large squares in red/green ink, 107/125 vector drawings, wiped
+    to a blank page by V3 and every version since). A figure is a
+    large connected ink group: group ink-candidate paths by rect
+    proximity (6pt), and keep groups >= 80pt in BOTH dimensions
+    (annotations -- ticks, circles, written digits, margin notes --
+    are small, or wide-but-short, and stay removed). On a text-free
+    page (no alphabetic dict line -- only a footer number) all ink
+    is the page's content, so the whole page is kept. Exemption
+    applies ONLY to ink removal, never to gray/e1 watermark removal.
     """
     import re as _re
     has_alpha = False
@@ -287,86 +238,100 @@ def _ink_figure_rects(drawings, page) -> list:
                     has_alpha = True
                     break
     if not has_alpha:
-        return [page.rect]
-    # Question/option text rects: a pen group printing over them is
-    # teacher marking, not a figure.
-    text_rects = []
-    try:
-        # v29c: ALL non-footer text lines, not only question/option ones.
-        # A theory page has no options (APGP p27), so question/option rects
-        # were empty and the teacher's red arrow + underbrace working in
-        # the margin sailed through the 80x80 gate. Every protected pen
-        # figure checked (M2D p13/p23, H&D p1/p14, M3C4 p2/p3/p10,
-        # Geo p25, M3C3 p16/p22) overlaps NO text span, so this net is
-        # safe for real figures -- their labels sit clear of the strokes.
-        for ln in _dict_line_info(page):
-            if not ln[2]:  # not footer
-                text_rects.append(pymupdf.Rect(ln[4] - 2.0, ln[6] - 2.0,
-                                               ln[5] + 2.0, ln[7] + 2.0))
-    except Exception:
-        text_rects = []
+        # v29: whole-page keep only when the page is truly
+        # vector-only. If the page carries a CONTENT image (not the
+        # slide template, which repeats on every page), the "text"
+        # lives in that image and the ink is teacher working ON it
+        # (Algebra p19: the whole question and options are image
+        # strips, and the red solution on top survived as "figure"
+        # content). Template rects come from clean_pdf (images on
+        # >=50% of the file's pages); without them, keep the old
+        # behaviour. A page with only template images is unaffected.
+        if template_rects is not None:
+            has_content = False
+            try:
+                _seen = set()
+                for _img in page.get_images(full=True):
+                    if _img[0] in _seen:
+                        continue
+                    _seen.add(_img[0])
+                    for _rr in page.get_image_rects(_img[0]):
+                        if not any(
+                                abs(_rr.x0 - _t[0]) <= 5.0
+                                and abs(_rr.y0 - _t[1]) <= 5.0
+                                and abs(_rr.x1 - _t[2]) <= 5.0
+                                and abs(_rr.y1 - _t[3]) <= 5.0
+                                for _t in template_rects):
+                            has_content = True
+                            break
+                    if has_content:
+                        break
+            except Exception:
+                has_content = False
+            if not has_content:
+                return "ALL"
+        else:
+            return "ALL"
     cands = [d for d in drawings if _ink_is_candidate(d)]
+    # v29: question/option line bboxes, so a mark sitting ON text
+    # (a tick over an option, a scribble over a marker) is never
+    # kept as a figure label, even when it touches a figure's long
+    # paths (Geometry p19's tick survived this way: in source
+    # coords it sits next to the figure group).
+    qo_rects = []
+    try:
+        for (bl, is_opt, is_foot, is_q, lx0, lx1, ly0, ly1,
+             is_lab, size) in _dict_line_info(page):
+            if is_opt or is_q:
+                qo_rects.append((lx0 - 2.0, ly0 - 2.0,
+                                 lx1 + 2.0, ly1 + 2.0))
+    except Exception:
+        qo_rects = []
+    parent = list(range(len(cands)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    # Group by TOUCHING (2pt), not nearness: 6pt chained the teacher's
+    # scattered marks across whole questions into fake "figures"
+    # (Geo p14/p25 kept annotation groups of 245x261 / 434x82).
+    rects = []
+    for d in cands:
+        r = d["rect"]
+        rects.append((r.x0 - 2.0, r.y0 - 2.0, r.x1 + 2.0, r.y1 + 2.0))
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            a, b = rects[i], rects[j]
+            if a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] \
+                    and b[1] <= a[3]:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+    groups = {}
+    for i, d in enumerate(cands):
+        groups.setdefault(find(i), []).append(d)
+    # The slide template paints two blue panels (e1 fills) on every
+    # page, and a printed figure is often drawn ON one (Mens 3D
+    # p16's cylinder outlines sit on the 161-240x77-180 panel, so
+    # the ink-only bbox, 52x75, understates the figure and the gate
+    # dropped it). An ink group that overlaps a panel by >= 30% of
+    # its own bbox area counts as a figure even when under 80x80 --
+    # working merely adjacent to a panel (Mens 3D p22's scratch
+    # triangle, ~2% overlap) does not. Page-background fills are
+    # white, not e1, so they can never qualify a group this way.
     panels = [d["rect"] for d in drawings if is_e1_watermark(d)]
-
-    def colour_key(d):
-        c = d.get("color")
-        return tuple(round(v, 3) for v in c) if c is not None else None
-
-    keep_rects = []
-    kept_members = set()
-
-    def long_black(group):
-        lp = [m for m in group
-              if max(m["rect"].width, m["rect"].height) >= 40.0]
-        if len(lp) < 2:
-            return None
-        black = all((m.get("color") is not None
-                     and max(m["color"]) <= 0.15) for m in lp)
-        return lp, black
-
-    def group_bbox(group):
-        return (min(m["rect"].x0 for m in group),
-                min(m["rect"].y0 for m in group),
-                max(m["rect"].x1 for m in group),
-                max(m["rect"].y1 for m in group))
-
-    def chain(groups_seed):
-        parent = list(range(len(groups_seed)))
-
-        def find(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
-
-        rects = []
-        for d in groups_seed:
-            r = d["rect"]
-            rects.append((r.x0 - 2.0, r.y0 - 2.0, r.x1 + 2.0, r.y1 + 2.0))
-        for i in range(len(groups_seed)):
-            for j2 in range(i + 1, len(groups_seed)):
-                a, b = rects[i], rects[j2]
-                if a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] \
-                        and b[1] <= a[3]:
-                    ri, rj = find(i), find(j2)
-                    if ri != rj:
-                        parent[ri] = rj
-        out = {}
-        for i, d in enumerate(groups_seed):
-            out.setdefault(find(i), []).append(d)
-        return list(out.values())
-
-    def evaluate(group):
-        """None if not a figure, else the keep list of member rects."""
-        lb = long_black(group)
-        if lb is None:
-            return None
-        long_paths, is_black = lb
-        x0, y0, x1, y1 = group_bbox(group)
-        garea = (x1 - x0) * (y1 - y0)
-        size_ok = (x1 - x0 >= 80.0 and y1 - y0 >= 80.0)
-        panel_branch = False
-        if not size_ok:
+    keep = []
+    for members in groups.values():
+        x0 = min(m["rect"].x0 for m in members)
+        y0 = min(m["rect"].y0 for m in members)
+        x1 = max(m["rect"].x1 for m in members)
+        y1 = max(m["rect"].y1 for m in members)
+        panel_only = False
+        if x1 - x0 < 80.0 or y1 - y0 < 80.0:
+            garea = (x1 - x0) * (y1 - y0)
             on_panel = False
             for pr in panels:
                 ix = max(0.0, min(x1, pr.x1) - max(x0, pr.x0))
@@ -374,32 +339,92 @@ def _ink_figure_rects(drawings, page) -> list:
                 if garea > 0 and ix * iy / garea >= 0.30:
                     on_panel = True
                     break
-            if on_panel:
-                # v28 rule: coloured working on a panel stays removed
-                # (Mens 3D p22's red scratch triangle); no fall-through.
-                size_ok = is_black
-                panel_branch = True
-        if not size_ok and not panel_branch:
-            # v29b: small groups qualify only as BLACK shapes with >= 3
-            # long paths (Mens 3D C4 p10's 46x54 square base). The v29
-            # closed-cycle test measured exactly backwards on real data
-            # (the square's stray internal stroke left a degree-1 node;
-            # dense handwritten glyph chains closed). Coloured small
-            # groups -- the "sqrt11 = 4sqrt17" underbrace working -- die.
-            size_ok = is_black and len(long_paths) >= 3
-        if not size_ok:
-            return None
-        grect = pymupdf.Rect(x0, y0, x1, y1)
-        if any(grect.intersects(tr) for tr in text_rects):
-            return None
-        keep = []
-        for m in group:
+            if not on_panel:
+                continue
+            panel_only = True
+        # A figure is built from long strokes (sides, circumcircle);
+        # chained annotations are short strokes. Require >= 2 long
+        # paths, then keep only the long paths plus paths near them
+        # (figure labels) -- the teacher's working written beside a
+        # figure (Geo p14's "BA=", "CAP ~ BAC" notes below the
+        # triangle) is far from every long stroke and stays removed.
+        long_paths = [m for m in members
+                      if max(m["rect"].width, m["rect"].height) >= 40.0]
+        if len(long_paths) < 2:
+            continue
+        if panel_only:
+            # The panel path is narrow, so it needs one more guard:
+            # a printed figure's long strokes are black, while
+            # coloured teacher working sitting on a panel (Mens 3D
+            # p22's red scratch triangle, 60% panel overlap) is not.
+            # Large coloured figures still pass the main gate above.
+            black = True
+            for lp in long_paths:
+                c = lp.get("color") or lp.get("fill")
+                if c is not None and max(c) >= 0.15:
+                    black = False
+                    break
+            if not black:
+                continue
+        # v29: a dense working cluster is not a figure. Handwritten
+        # solutions chain (2pt touching) into a page-spanning group
+        # (Algebra p13: 449x212, 186 members) that passes the size
+        # and long-path gates, so the exemption kept the whole
+        # solution. Writing arranges small strokes in rows; figures
+        # do not. If >=3 rows of >=5 small strokes (>=60pt wide)
+        # hold >50% of the group, it is writing, not a figure.
+        # (A real figure's labels can form a row or two -- Geometry
+        # p14's triangle has 3 rows but only ~30% of members in
+        # them -- so both conditions must hold.)
+        small = [m for m in members
+                 if m["rect"].width < 25.0 and m["rect"].height < 25.0]
+        row_groups = []
+        for m in sorted(small,
+                        key=lambda z: (z["rect"].y0 + z["rect"].y1) / 2):
+            cy = (m["rect"].y0 + m["rect"].y1) / 2
+            for rg in row_groups:
+                if abs(rg[0] - cy) <= 6.0:
+                    rg[1].append(m)
+                    break
+            else:
+                row_groups.append([cy, [m]])
+        in_rows = 0
+        n_rows = 0
+        for _cy, ms in row_groups:
+            xs = min(m["rect"].x0 for m in ms)
+            xe = max(m["rect"].x1 for m in ms)
+            if len(ms) >= 5 and xe - xs >= 60.0:
+                n_rows += 1
+                in_rows += len(ms)
+        if n_rows >= 3 and members \
+                and in_rows / len(members) > 0.5:
+            continue
+        # v29: near-long labels must anchor to a KEPT long, not to
+        # a long excluded above for overlapping Q/O text (Surds
+        # p26's "c^2 =" note survived because it sits near the
+        # arrow that the text-overlap rule had just excluded).
+        kept_longs = [lp for lp in long_paths
+                      if not any(qx0 <= lp["rect"].x1
+                                 and lp["rect"].x0 <= qx1
+                                 and qy0 <= lp["rect"].y1
+                                 and lp["rect"].y0 <= qy1
+                                 for qx0, qy0, qx1, qy1 in qo_rects)]
+        for m in members:
             r = m["rect"]
+            # v29: the text-overlap exclusion applies to LONG
+            # members too. A box drawn around an option, or a
+            # cross-out over an option, is a long path; keeping it
+            # as a "figure side" would keep an answer-revealing
+            # mark. A real figure side does not overlap Q/O text.
+            if any(qx0 <= r.x1 and r.x0 <= qx1
+                   and qy0 <= r.y1 and r.y0 <= qy1
+                   for qx0, qy0, qx1, qy1 in qo_rects):
+                continue
             if max(r.width, r.height) >= 30.0:
                 keep.append(pymupdf.Rect(r))
                 continue
             cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-            for lp in long_paths:
+            for lp in kept_longs:
                 lr = lp["rect"]
                 dx = 0.0 if lr.x0 <= cx <= lr.x1 else min(
                     abs(cx - lr.x0), abs(cx - lr.x1))
@@ -408,59 +433,7 @@ def _ink_figure_rects(drawings, page) -> list:
                 if dx * dx + dy * dy <= 15.0 * 15.0:
                     keep.append(pymupdf.Rect(r))
                     break
-        return keep
-
-    for k in dict.fromkeys(colour_key(d) for d in cands):
-        members = [d for d in cands if colour_key(d) == k]
-        for group in chain(members):
-            keep = evaluate(group)
-            if keep is not None:
-                keep_rects.extend(keep)
-                for m in group:
-                    kept_members.add(id(m))
-                continue
-            # v29b: a group chained THROUGH the text area (its bbox
-            # overlaps text, or it fails on size) may still contain a
-            # distant figure: drop the members that overlap text, re-chain
-            # what remains and evaluate the sub-groups. The teacher's
-            # purple option box keeps ALL its members (its sides never
-            # touch the text inside it), so its sub-group still overlaps
-            # text and dies; the black square chained to a question-area
-            # underline via bridging strokes comes back clean.
-            core = [m for m in group
-                    if not any(m["rect"].intersects(tr) for tr in text_rects)]
-            if len(core) == len(group) or not core:
-                continue
-            for sub in chain(core):
-                keep = evaluate(sub)
-                if keep is not None:
-                    keep_rects.extend(keep)
-                    for m in sub:
-                        kept_members.add(id(m))
-    # Small BLACK labels beside/inside a kept figure (H&D p1's "30deg"):
-    # black is the label colour; coloured small strokes near a figure are
-    # marks (Mens 3D C4 p3's green circles) and stay removed.
-    fig_long = [r for r in keep_rects if max(r.width, r.height) >= 30.0]
-    for d in cands:
-        if id(d) in kept_members:
-            continue
-        c = d.get("color")
-        if c is None or max(c) > 0.2:
-            continue
-        r = d["rect"]
-        if max(r.width, r.height) >= 30.0:
-            continue
-        cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-        for lr in fig_long:
-            dx = 0.0 if lr.x0 <= cx <= lr.x1 else min(
-                abs(cx - lr.x0), abs(cx - lr.x1))
-            dy = 0.0 if lr.y0 <= cy <= lr.y1 else min(
-                abs(cy - lr.y0), abs(cy - lr.y1))
-            if dx * dx + dy * dy <= 25.0 * 25.0:
-                keep_rects.append(pymupdf.Rect(r))
-                kept_members.add(id(d))
-                break
-    return keep_rects
+    return keep
 
 
 def should_remove_drawing(d: dict, remove_ink: bool, remove_marks: bool,
@@ -468,10 +441,22 @@ def should_remove_drawing(d: dict, remove_ink: bool, remove_marks: bool,
     if remove_marks and (is_gray_watermark(d) or is_e1_watermark(d)):
         return True
     if remove_ink and _ink_is_candidate(d):
+        # v29: keep_ink_rects is "ALL" on a whole-page-kept (text-free,
+        # vector-only) page, else the kept members' rects. A member
+        # is kept only when its OWN rect matches a keep rect -- NOT
+        # when its centre merely falls inside one. A long curved
+        # arrow's bbox spans a huge area, and centre-in-bbox kept
+        # every mark inside it (Surds p26's "b)" cross-out sits
+        # inside the arrow's bbox but far from the arrow curve, so
+        # it survived as a "figure" member).
+        if keep_ink_rects == "ALL":
+            return False
         if keep_ink_rects:
             r = d["rect"]
-            cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-            if any(kr.x0 <= cx <= kr.x1 and kr.y0 <= cy <= kr.y1
+            if any(abs(kr.x0 - r.x0) <= 0.5
+                   and abs(kr.y0 - r.y0) <= 0.5
+                   and abs(kr.x1 - r.x1) <= 0.5
+                   and abs(kr.y1 - r.y1) <= 0.5
                    for kr in keep_ink_rects):
                 return False
         return True
@@ -1330,8 +1315,7 @@ def _table_grid_zones(page):
     return zones
 
 
-def _row_shift_plan(lines, blocks, height, grid_zones=None,
-                    extra_obstacles=None):
+def _row_shift_plan(lines, blocks, height, grid_zones=None):
     """One rigid shift per QUESTION's option block, capped so the
     top row never prints over the question. Returns (line_dy, zones).
 
@@ -1447,14 +1431,6 @@ def _row_shift_plan(lines, blocks, height, grid_zones=None,
                         if gx0 <= cx <= gx1 and gy0 <= cy <= gy1:
                             bot = max(bot, gy1)
                 best = bot if best is None else max(best, bot)
-        # v29: a KEPT pen figure between the question and the
-        # options is an obstacle too (APGP p12's option rows
-        # shifted on top of the purple box before it was
-        # correctly removed); figures never move, so the rows
-        # must stop below them.
-        for ob in (extra_obstacles or []):
-            if ob.x0 < rx1 and ob.x1 > rx0 and ob.y1 <= row_top:
-                best = ob.y1 if best is None else max(best, ob.y1)
         return None if best is None else row_top - best - 6.0
 
     for qbot, members_labels in groups.items():
@@ -1782,46 +1758,6 @@ def _delete_hindi_blocks(doc, page, dropped_rects, dropped_baselines,
                     # in the other column are Calibri, so they stay.
                     # The frag window (first_deva..first_opt)
                     # already excludes real question/option lines.
-                    # v29 (c5): the Hindi sentence's own math row. The
-                    # extractor splits a Hindi sentence's formula into
-                    # pure-Latin dict lines beside the Hindi words (Surds
-                    # p22: the Hindi line + "2-x^2+" + "x-3^2=?" share
-                    # baseline 40.1, superscripts at 35.9), so c1/c2/c4
-                    # all miss parts: the Calibri "?" is not a math font,
-                    # and the superscripts sit 4.2pt above the Hindi
-                    # baseline, outside the old 2pt window. A block in
-                    # the frag window whose baseline is within 8pt of a
-                    # DROPPED Hindi baseline, at/right of that Hindi
-                    # line's own start (minus 20pt), is Hindi-sentence
-                    # content: delete it on the Hindi baseline (any
-                    # font/length) and above it when math-set or short.
-                    # A figure label left of the question column fails
-                    # the x gate and stays.
-                    if not frag and first_opt is not None \
-                            and first_deva - 8.0 <= baseline < first_opt:
-                        units5 = 0
-                        for sm in re.finditer(r"\((?:\\.|[^\\()])*)\)", seg):
-                            units5 += len(sm.group(0)) - 2
-                        for sm in re.finditer(r"<([0-9A-Fa-f]+)>", seg):
-                            units5 += len(sm.group(1)) // 2
-                        for b in dropped_baselines:
-                            if abs(b - baseline) > 8.0:
-                                continue
-                            hx0s = [x02 for (b2, x02, x12, hd2, t2, s2)
-                                    in dict_lines
-                                    if hd2 and abs(b2 - b) < 3.0]
-                            if not hx0s:
-                                continue
-                            if x < min(hx0s) - 20.0:
-                                continue
-                            if abs(b - baseline) <= 3.0:
-                                frag = True
-                                break
-                            if baseline < b and (
-                                    _is_math_font(font, font_bases)
-                                    or 0 < units5 <= 4):
-                                frag = True
-                                break
                     if not frag and _is_math_font(font, font_bases):
                         n_deva = sum(
                             1 for (b2, x02, x12, hd2, t2, s2)
@@ -1856,7 +1792,7 @@ def _delete_hindi_blocks(doc, page, dropped_rects, dropped_baselines,
             # hex bytes (a 2-byte CID counts double).
             sup = False
             if first_opt is not None and first_deva is not None \
-                    and first_deva - 2.0 <= baseline < first_opt:
+                    and first_deva - 16.0 <= baseline < first_opt:
                 units = 0
                 for sm in re.finditer(r"\((?:\\.|[^\\()])*\)", seg):
                     units += len(sm.group(0)) - 2
@@ -1870,18 +1806,76 @@ def _delete_hindi_blocks(doc, page, dropped_rects, dropped_baselines,
                     for (bl2, x02, x12, hd2, t2, s2) in dict_lines:
                         if not hd2:
                             continue
-                        if not 3.0 <= bl2 - baseline <= 15.0:
+                        if not (3.0 <= bl2 - baseline <= 15.0
+                                or 3.0 <= baseline - bl2 <= 15.0):
                             continue
+                        # v29: the Hindi BLOCK's full x-range, not
+                        # one line's: a Hindi block's lines have
+                        # varying widths (Surds p32's second Hindi
+                        # line ends at x424 while its equation's
+                        # "29" and "?" sit at x466/x522), so a
+                        # single line's range misses the block's own
+                        # orphans. Lines within 40pt are one block;
+                        # a distant column's Hindi stays separate.
                         xs0 = min(x0 for (b2, x0, x1, hd, t, s)
                                   in dict_lines
-                                  if abs(b2 - bl2) < 2.0)
+                                  if hd and abs(b2 - bl2) <= 40.0)
                         xs1 = max(x1 for (b2, x0, x1, hd, t, s)
                                   in dict_lines
-                                  if abs(b2 - bl2) < 2.0)
+                                  if hd and abs(b2 - bl2) <= 40.0)
                         if xs0 - 2.0 <= x <= xs1 + 2.0:
                             sup = True
                             break
-            if font_is_hindi or frag or sup or \
+            # v29: Hindi-block math tail. A math-only line sitting
+            # just below a Hindi line (same column), well above the
+            # options, is the Hindi block's own equation or fragments
+            # (Surds p32's equation printed twice because the Hindi
+            # copy is math, not Devanagari, so every earlier rule
+            # kept it). English never sits between Hindi and options
+            # in one column, and option numerators sit within 10pt
+            # above their label, so the 12pt clearance plus the
+            # duplication/substring gate keep real content safe.
+            tail = False
+            if line_idx is not None and first_opt is not None \
+                    and first_deva is not None:
+                bl, x0, x1, has_deva, t, segs = dict_lines[line_idx]
+                if not has_deva and baseline <= first_opt - 12.0:
+                    nospace = t.replace(" ", "").replace(" ", "")
+                    if not re.search(r"[A-Za-z]{2,}", nospace):
+                        def _norm(s):
+                            s = s.replace(" ", "").replace(" ", "")
+                            for ch in "()[]{}?":
+                                s = s.replace(ch, "")
+                            return s
+                        nt = _norm(t)
+                        for (b2, x02, x12, hd2, t2, s2) in dict_lines:
+                            if not hd2:
+                                continue
+                            if not (x02 - 2.0 <= x1
+                                    and x0 <= x12 + 2.0):
+                                continue
+                            if not 0.0 <= baseline - b2 <= 15.0:
+                                continue
+                            for (be, xe0, xe1, hde, te, se) \
+                                    in dict_lines:
+                                if hde or be >= first_deva:
+                                    continue
+                                if not (xe0 - 2.0 <= x1
+                                        and x0 <= xe1 + 2.0):
+                                    continue
+                                ne = _norm(te)
+                                if nt and (nt == ne
+                                           or (len(nt) >= 2
+                                               and nt in ne)):
+                                    tail = True
+                                    break
+                            if tail:
+                                break
+            if tail and any(gx0 <= x <= gx1
+                            and gy0 <= baseline <= gy1
+                            for gx0, gx1, gy0, gy1 in grid_zones):
+                tail = False
+            if font_is_hindi or frag or sup or tail or \
                     (on_hindi_line and inside_hindi_rect):
                 changed = True
                 deleted += 1
@@ -2172,8 +2166,7 @@ def _shift_drawings_in_segment(seg, zones):
     return out, len(edits)
 
 
-def _shift_option_drawings(doc, page, dropped_rects, remove_hindi,
-                           ink_rects=None):
+def _shift_option_drawings(doc, page, dropped_rects, remove_hindi):
     """Move option graphics (fraction bars, root signs) up by the same
     amount their option lines move. Text surgery shifts option text
     but never touches drawings, so bars/roots were left behind at the
@@ -2189,8 +2182,7 @@ def _shift_option_drawings(doc, page, dropped_rects, remove_hindi,
     # line's bbox, so unexpanded bands miss it), with the same capped
     # row shifts the text surgery is about to apply.
     _line_dy, zones = _row_shift_plan(_dict_line_info(page), spans,
-                                      height, _table_grid_zones(page),
-                                      ink_rects)
+                                      height, _table_grid_zones(page))
     if not zones:
         return 0
     shifted = 0
@@ -2859,7 +2851,7 @@ def _merge_word_spaces(doc, page):
     return merged
 
 
-def _surgery_page(doc, page, dropped_rects, remove_hindi, ink_rects=None):
+def _surgery_page(doc, page, dropped_rects, remove_hindi):
     """Shift lines below removed Hindi blocks up, recolor question red /
     options black, by editing only BT blocks in the page's content
     streams. Every other stream byte is preserved. Returns the number of
@@ -2892,9 +2884,8 @@ def _surgery_page(doc, page, dropped_rects, remove_hindi, ink_rects=None):
         return sum(b1 - b0 for b0, b1 in blocks if b1 <= baseline_topdown)
 
     lines = _dict_line_info(page)
-    grid_zones = _table_grid_zones(page)
     line_dy, _zones = _row_shift_plan(lines, blocks, height,
-                                      grid_zones, ink_rects)
+                                      _table_grid_zones(page))
     edited = 0
     for xref in page.get_contents():
         raw = doc.xref_stream(xref)
@@ -2940,19 +2931,6 @@ def _surgery_page(doc, page, dropped_rects, remove_hindi, ink_rects=None):
                 out.append(seg)
                 continue
             is_opt, is_foot, is_q, li = match
-            # v29: table content keeps its original colour. The Stats
-            # p18 bilingual header ("CLASS INTERVAL ...") sits above the
-            # first option in the question column, so the question rule
-            # painted it red; a line whose centre is inside a table grid
-            # zone is table content (same guard the shift plan uses).
-            if grid_zones and (is_opt or is_q):
-                _ln = lines[li]
-                _cx = (_ln[4] + _ln[5]) / 2.0
-                _cy = (_ln[6] + _ln[7]) / 2.0
-                if any(gx0 <= _cx <= gx1 and gy0 <= _cy <= gy1
-                       for gx0, gx1, gy0, gy1 in grid_zones):
-                    is_opt = False
-                    is_q = False
             newseg = seg
             if not is_foot:
                 # Shift ONLY option rows, each by its row's single
@@ -3089,6 +3067,28 @@ def clean_pdf(input_path: str, output_path: str,
     src_doc = pymupdf.open(input_path)
     out_doc = pymupdf.open(input_path)
     classifier = ImageClassifier(src_doc)
+    # v29: slide-template image rects (images on >=50% of pages),
+    # so _ink_figure_rects can tell a content image (question as
+    # an image strip) from the repeating template background.
+    _rect_pages = {}
+    for _pg in src_doc:
+        _seen = set()
+        for _img in _pg.get_images(full=True):
+            if _img[0] in _seen:
+                continue
+            _seen.add(_img[0])
+            try:
+                _rs = _pg.get_image_rects(_img[0])
+            except Exception:
+                continue
+            for _rr in _rs:
+                _key = (round(_rr.x0), round(_rr.y0),
+                        round(_rr.x1), round(_rr.y1))
+                _rect_pages[_key] = _rect_pages.get(_key, 0) + 1
+    _npages = max(1, len(src_doc))
+    template_rects = [tuple(float(v) for v in _k)
+                      for _k, _c in _rect_pages.items()
+                      if _c >= 0.5 * _npages]
     stats = {"pages": len(src_doc), "removed": 0, "removed_images": 0,
              "latin_lines": 0, "hindi_rasters": 0, "images_kept": 0,
              "hindi_removed": 0}
@@ -3138,21 +3138,69 @@ def clean_pdf(input_path: str, output_path: str,
         # Hand-drawn figures share the pen with annotations; exempt
         # large ink groups (and all ink on text-free pages) so figures
         # survive (see _ink_figure_rects).
-        keep_ink_rects = _ink_figure_rects(drawings, src_page) \
+        keep_ink_rects = _ink_figure_rects(
+            drawings, src_page, template_rects) \
             if remove_ink else []
         # Small marks inside a dropped Hindi row (a fraction bar, a dot)
         # belong to the Hindi text; leave them and they survive as stray
         # red dashes. Only small marks are eligible, never large art.
+        # v29: the producer also draws the Hindi sentence's
+        # parentheses as FILLED paths (Algebra p13: a red 118x17
+        # paren pair on the Hindi line, a 71x13 pair on the second
+        # Hindi line). They are too wide for the 400 area cap, but
+        # they are text-height (<=22pt) and sit in a Hindi line's
+        # band, so they go too. The band uses each Hindi line's FULL
+        # extent (Devanagari plus its Latin math segments), because
+        # the dropped rects cover only the Devanagari segments and
+        # the parens sit in the math segments. Question-row fills
+        # (the blue question parentheses) are in no Hindi band and
+        # stay; figure fills are taller/wider and stay.
+        # Full extent of each Hindi line: group ALL dict lines by
+        # baseline (2pt), and keep a cluster's full x-range when ANY
+        # of its segments has Devanagari, so Latin math segments of
+        # the same Hindi sentence are covered too.
+        hindi_lines = []
+        _hl = []
+        for blk in src_page.get_text("dict")["blocks"]:
+            if blk.get("type") != 0:
+                continue
+            for ln in blk.get("lines", []):
+                if not ln.get("spans"):
+                    continue
+                joined = "".join(s["text"] for s in ln["spans"])
+                _hl.append((ln["spans"][0]["origin"][1],
+                            ln["bbox"][0], ln["bbox"][2],
+                            any(0x0900 <= ord(c) <= 0x097F
+                                for c in joined)))
+        _clusters = []
+        for _bl, _x0, _x1, _hd in _hl:
+            for _c in _clusters:
+                if abs(_c[0] - _bl) < 2.0:
+                    _c[1] = min(_c[1], _x0)
+                    _c[2] = max(_c[2], _x1)
+                    _c[3] = _c[3] or _hd
+                    break
+            else:
+                _clusters.append([_bl, _x0, _x1, _hd])
+        hindi_lines = [(_b, _a, _c) for (_b, _a, _c, _hd)
+                       in _clusters if _hd]
         def _hindi_mark(d):
-            if not remove_hindi or not dropped_rects:
+            if not remove_hindi:
                 return False
             r = d["rect"]
-            if r.get_area() > 400:
-                return False
             cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-            return any(hr.x0 - 2 <= cx <= hr.x1 + 2
+            if dropped_rects and r.get_area() <= 400:
+                if any(hr.x0 - 2 <= cx <= hr.x1 + 2
                        and hr.y0 - 2 <= cy <= hr.y1 + 2
-                       for hr in dropped_rects)
+                       for hr in dropped_rects):
+                    return True
+            if d.get("fill") is not None and r.height <= 22.0 \
+                    and r.width <= 250.0:
+                for (hbl, hx0, hx1) in hindi_lines:
+                    if hx0 - 2.0 <= cx <= hx1 + 2.0 \
+                            and hbl - 12.0 <= cy <= hbl + 5.0:
+                        return True
+            return False
         bad_drawings = [d for d in drawings
                         if should_remove_drawing(d, remove_ink, remove_marks,
                                                  keep_ink_rects)
@@ -3254,32 +3302,6 @@ def clean_pdf(input_path: str, output_path: str,
                     redraw_path(page, d)
                 stats["redrawn"] = stats.get("redrawn", 0) + len(to_restore)
 
-        # v29: question-number badges ("23.", "(16)") are small images in
-        # the number slot left of the question column, above the options.
-        # The pen-image classifier killed them (Statistics p3's "23."),
-        # deleting question content; a number badge is never an answer
-        # mark, so keep every small image in the badge slot regardless of
-        # its pen-colour stats. (This supersedes the old by-design removal
-        # of pen-drawn number badges -- questions must stay complete.)
-        if bad_images:
-            try:
-                binfo = _dict_line_info(page)
-                b_qx0 = min((ln[4] for ln in binfo if ln[3]), default=None)
-                b_obl = min((ln[0] for ln in binfo if ln[1]), default=None)
-                if b_qx0 is not None and b_obl is not None:
-                    b_keep = set()
-                    for xref in bad_images:
-                        for r in page.get_image_rects(xref):
-                            if r.width <= 45 and r.height <= 26 \
-                                    and r.x1 <= b_qx0 + 2.0 \
-                                    and r.y1 < b_obl + 2.0:
-                                b_keep.add(xref)
-                                break
-                    if b_keep:
-                        bad_images = [x for x in bad_images
-                                      if x not in b_keep]
-            except Exception:
-                pass
         for xref in bad_images:
             try:
                 page.delete_image(xref)
@@ -3302,7 +3324,7 @@ def clean_pdf(input_path: str, output_path: str,
         try:
             stats["drawings_shifted"] = stats.get("drawings_shifted", 0) \
                 + _shift_option_drawings(out_doc, page, dropped_rects,
-                                         remove_hindi, keep_ink_rects)
+                                         remove_hindi)
         except Exception:
             pass
         # Stream surgery: shift lines below the removed Hindi blocks up
@@ -3310,7 +3332,7 @@ def clean_pdf(input_path: str, output_path: str,
         # are edited; all other stream bytes are preserved.
         try:
             stats["latin_lines"] += _surgery_page(
-                out_doc, page, dropped_rects, remove_hindi, keep_ink_rects)
+                out_doc, page, dropped_rects, remove_hindi)
         except Exception:
             pass
 
