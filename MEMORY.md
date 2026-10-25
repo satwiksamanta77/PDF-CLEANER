@@ -171,3 +171,98 @@ Planned: baseline-clustered runs (group spans by origin y within ~2pt + size + b
 **Verification (2026-10-24):** all 18 PDFs × 4 toggle modes = **72/72 runs OK** (old code failed 72/72 on Linux: hardcoded `C:\Windows\Fonts\mangalb.ttf`; V3 has no platform font dependency). Visually verified page renders: Mensuration 3D p14 (the screenshot page — 4/5 fraction stacked, Hindi solid, ink gone), Geometry p0 (triangle + option fractions in columns), Statistics p5 (histogram intact, red pen overlay gone), DI p0/p3 (tables clean, pie chart intact), Height & Distance p0 (title frame kept) and p2 (all six printed triangles kept, red answers gone), AP/GP p0 (superscripts/fractions in place), Equation p0, Surds p0, Coordinate Geometry p0/p2, Mensuration 2D p0 (white card over orange band, z-order correct), Mensuration 3D Class 4 p0/p3 (spheres kept), Trigonometry/Permutation/Algebra/Coordinate notes pages (printed handwriting-style content kept when it is print; teacher pen removed). `both_off` mode preserves handwriting + watermarks while still fixing the text. Web UI smoke-tested: `/api/list`, `/api/clean`, download all work.
 
 **Known tiny remnants (accepted):** pen strokes drawn *inside* a Hindi text line's own rectangle are pixel-copied with the line (e.g. a small red tick fragment on 1–2 pages); handwritten question-number badge images (e.g. a pen-drawn "2.") are removed with ink ON, by design.
+
+## 20. Canva fix loop (2026-10-25) — v6–v28, summary
+
+V3 output did not open the same way in Canva's PDF editor (the user: the
+original opens fine, the cleaned file does not). The loop below ran under the
+user's 2026-10-25 01:59 instruction: fix everything, regenerate all, re-upload
+all, check every page one by one, iterate until fully clean, then push the
+updated code (OUTPUT PDFs not named in that approval).
+
+**Architecture (v6, still current): never re-emit text.** Surviving text stays
+byte-for-byte; Hindi is removed by BT-block deletion; pen/watermarks by
+redaction; options shift up + question red / options black by BT-block surgery
+only. (v5's full-page re-emission as synthetic Helvetica was abandoned: Canva
+re-flows synthetic text; original embedded-font TJ positioning is what it
+handles.)
+
+**Fix families (all in `clean_for_canva.py` unless noted):**
+- v9: path-atomic drawing shift (path moves if its bbox centre is in an option
+  zone); question gap cap 6pt; space MERGE (adjacent word blocks on Q/O lines
+  merge into one block with real space glyphs mid-block); recolour fixes
+  (rg/RG independent, numeric sc/SC replaced, insert before first text op,
+  leading space after TD1); label-anchored `is_question`; SINGLE dy per
+  question; column guard (option membership/promotion require x0 >= label_x0
+  − 10 — fixed DI p1 table garbling).
+- v10–v16 (merge rewrite, `_merge_word_spaces`): number-free merged arrays
+  (space glyphs only, gap-count rounded); cross-font merge (Identity-H math
+  fragments merge with font/Tc switches, spaces borrowed from a neighbouring
+  single-byte segment; advances by dict-span slicing by CID count, spans
+  matched by CONTAINMENT and space-stripped; CID counting includes literal
+  groups); attach-instead-of-break punctuation/number rules (lone "." decimal
+  only digit-before AND digit-after; ":" before digit attaches; symbol
+  prefixes attach before letters/digits, not operators; "," before digit with
+  gap < 2pt attaches); safety valves (reflowed end must not exceed source end
+  + 2/4pt); merges per-content-stream (outputs can have multiple streams).
+- v17–v21: merge run breaks on attach boundaries with gap > 2.0; Hindi gate +
+  span-level font rule; fragment rules in `_delete_hindi_blocks` (c1: Latin in
+  a Devanagari x-segment; c2: pure-Latin sandwiched between Hindi neighbours,
+  aggregated BY BASELINE); table-grid guard (zone = gridlines' bbox, not the
+  frame; bare outlines get no zone); obstacle-aware shift cap (row top ≥6pt
+  below nearest kept line/zone bottom); option-continuation shift; Hindi-formula
+  math "sup" rule; `_drawing_ops` connectivity ("m" only on subpath start);
+  table-content excluded from option rows.
+- v22: continuation size guard (|size − label size| ≤ 1.5) — v21's continuation
+  rule had claimed DI p1's pie label "T.N, 9%" and shifted it out of its
+  redaction-inserted clip (clips are position-tied; shifted text outside a clip
+  vanishes). The 12pt membership branch is deliberately NOT guarded (fraction
+  numerators/denominators are legitimately smaller).
+- v23: standalone space blocks emptied when merged over (Statistics' producer
+  emits ' ' blocks between words; leaving them doubled gaps and drifted words
+  into splits in Canva — the real cause of the Stats letter fragmentation).
+- v24: Hindi-line Latin edge tokens (c3: a mixed line with ≥2 Devanagari chars
+  is a Hindi sentence, all its Latin blocks go; c4: pure-Latin on a Hindi
+  baseline; frag/sup windows start at first_deva − 2.0). Fragment checks must
+  use math-aware matching: fragments extract as mathematical Unicode
+  ('𝑷𝑸𝑹𝑺', '∆𝑨𝑩𝑪'), so ASCII needle searches miss them.
+- v25/v27: Hindi-fraction survival (c2 looks for Hindi on BOTH sides within
+  40pt; c4 requires a MATH font (CambriaMath) + Devanagari within 8pt, NO
+  x-gate — an x-gate broke Geo p14, whose "∆ABC" sits left of its Hindi words).
+- v28: figure-gate panel rule (`_ink_figure_rects`). The slide template paints
+  two blue e1 panels (161-240x77-180, 259-368x54-178) on every page; a printed
+  figure drawn ON a panel (Mens 3D p16's cylinder: ink-only bbox 52x75) was
+  dropped by the 80x80 gate. An ink group overlapping a panel by ≥30% of its
+  bbox area now qualifies under 80x80, BUT only if its long paths are black —
+  coloured working on a panel (Mens 3D p22's red scratch triangle, 60% panel
+  overlap) stays removed. Large coloured figures still pass the main gate.
+  (An earlier v28 attempt — transitive fill expansion — resurrected the p22
+  triangle via the full-page white background fill and was reverted.)
+  Do NOT narrow `is_e1_watermark`: the blue panels repeat identically on all
+  510 pages and are template background, not figure content; removing them is
+  by-design and accepted.
+
+**Verification rules learned (do not regress):**
+- MuPDF extraction does NOT predict Canva's visual rendering (merged lines
+  extract first-word-only yet pass in Canva). Never chase extraction.
+- Canva's text-extraction panel collapses visibly-present spaces; judge
+  spacing only visually at 200%+ zoom, with original comparison for any FAIL.
+- Sweep sets must be uniquely named and frozen per run (never reuse a suffix);
+  browser checks must run singly with the user present (parallel and
+  user-away launches die on upload-approval timeouts).
+- Most join/collision flags from checkers are Canva-side tightness or misreads
+  and must be arbitrated against local renders/dict/stream before any code
+  change. Real defects found this way: Stats fragmentation (v23), Geo Latin
+  remnants (v24), M2D Hindi fractions (v25/v27), M3 p16 figure loss (v28).
+
+**State at v28 (2026-10-25 evening):** regen 18/18 to `_work/v28all/`; audit
+CLEAN (gap WORSE 0, shift MOVED 0, colour 1 known Mens 3D-4 p5 footer '³'
+artifact, space MISSes 4 stale V2 only). SWEEP27 verdicts: DI CLEAN (6/7 pass,
+p5 fail refuted); Mens 3D 3/7 pass on SWEEP27 with p10/p12/p22 flags refuted
+and p16 figure loss fixed in v28. SWEEP28 set frozen (`_work/sweep28/`,
+BRIEF.md). Still open: Canva re-check of M3 p16 (v28) + Stats/Geo/M2D
+re-checks + wave-2 batch-2 full files, then the approved GitHub push.
+Known minor gaps: M3 p16's small cone sketch still missing (no safe rule —
+any cluster distance catching it at 32pt also keeps Geo p14's working at
+11pt); Geo p24 header "Apollonius theorem ():" empty parens (cosmetic,
+user not yet answered); Stats p18 table headers render red by rule.

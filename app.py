@@ -85,8 +85,15 @@ HTML = r"""<!DOCTYPE html>
           <div class="desc">"coaching center" text and cyan "e1" logo</div>
         </div>
       </label>
+      <label class="opt">
+        <input type="checkbox" id="hindi" checked>
+        <div>
+          <div class="lbl">Hindi text</div>
+          <div class="desc">Removes Hindi lines (uncheck to keep Hindi as a stable image)</div>
+        </div>
+      </label>
     </div>
-    <p class="count">Canva text-overlap fix is always applied (English stays editable, Hindi becomes stable image).</p>
+    <p class="count">Canva text-overlap fix is always applied (English stays editable).</p>
   </div>
 
   <div class="card">
@@ -101,6 +108,7 @@ const sel = document.getElementById('pdf');
 const cnt = document.getElementById('count');
 const ink = document.getElementById('ink');
 const marks = document.getElementById('marks');
+const hindi = document.getElementById('hindi');
 const pAll = document.getElementById('pAll');
 const pNone = document.getElementById('pNone');
 const go = document.getElementById('go');
@@ -121,12 +129,13 @@ function setPreset(all) {
   pNone.classList.toggle('active', !all);
   ink.checked = all;
   marks.checked = all;
+  hindi.checked = all;
 }
 pAll.onclick = () => setPreset(true);
 pNone.onclick = () => setPreset(false);
-ink.onchange = marks.onchange = () => {
-  pAll.classList.toggle('active', ink.checked && marks.checked);
-  pNone.classList.toggle('active', !ink.checked && !marks.checked);
+ink.onchange = marks.onchange = hindi.onchange = () => {
+  pAll.classList.toggle('active', ink.checked && marks.checked && hindi.checked);
+  pNone.classList.toggle('active', !ink.checked && !marks.checked && !hindi.checked);
 };
 
 go.onclick = async () => {
@@ -137,7 +146,7 @@ go.onclick = async () => {
   st.className = 'run';
   st.textContent = 'Cleaning... (Hindi pages can take a few seconds)';
   try {
-    const body = new URLSearchParams({ file: name, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0' });
+    const body = new URLSearchParams({ file: name, ink: ink.checked ? '1' : '0', marks: marks.checked ? '1' : '0', hindi: hindi.checked ? '1' : '0' });
     const r = await fetch('/api/clean', { method: 'POST', body });
     const j = await r.json();
     if (j.error) throw new Error(j.error);
@@ -212,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
         name = unquote(q.get("file", [""])[0])
         remove_ink = q.get("ink", ["1"])[0] == "1"
         remove_marks = q.get("marks", ["1"])[0] == "1"
+        remove_hindi = q.get("hindi", ["1"])[0] == "1"
         safe = os.path.basename(name)
         src = os.path.join(PDF_DIR, safe)
         if not os.path.isfile(src):
@@ -220,7 +230,7 @@ class Handler(BaseHTTPRequestHandler):
         out_name = v2_name(safe)
         out_path = os.path.join(OUT_DIR, out_name)
         try:
-            stats = clean_pdf(src, out_path, remove_ink=remove_ink, remove_marks=remove_marks)
+            stats = clean_pdf(src, out_path, remove_ink=remove_ink, remove_marks=remove_marks, remove_hindi=remove_hindi)
             import urllib.parse
             url = "/api/download?file=" + urllib.parse.quote(out_name)
             self._json({"ok": True, "url": url, "filename": out_name,

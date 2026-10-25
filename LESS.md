@@ -42,3 +42,6 @@ TRIGGER: superscripts drifted after line merge → RULE: group lines into rows b
 TRIGGER: pen-colour detection failed on downscaled images → RULE: sample original pixels at a stride; never resample before measuring (blending destroys pure pen hues).
 TRIGGER: Hindi glyph tops/anusvara clipped in rasters → RULE: pad the clip −4pt at the top; Devanagari renders above its span bbox.
 TRIGGER: old code crashed off Windows → RULE: no platform font paths; base-14 fonts + pixel-copy only. Dependencies are just PyMuPDF + Pillow (requirements.txt).
+TRIGGER: Canva check flags a join/collision → RULE: arbitrate against local renders/dict/stream + original comparison before any code change; MuPDF extraction and Canva's text panel both collapse real spaces and do not predict Canva's visual rendering.
+TRIGGER: figure drawn on a template panel dropped by the 80x80 ink gate → RULE: an ink group overlapping an e1 panel by ≥30% of its bbox qualifies under 80x80, but only when its long paths are black (coloured working on a panel stays removed); never let a page-background fill expand a figure group.
+TRIGGER: sweep upload fails on approval timeout → RULE: run Canva checks singly with the user present; freeze each sweep set under a unique suffix and never reuse one.
