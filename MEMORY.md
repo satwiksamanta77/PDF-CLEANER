@@ -358,3 +358,36 @@ with "8:1" — same class as H&D p1 reference triangles; no safe rule),
 occasional tiny pen specks near kept figures, M3C4 p10's green triangle
 gone only because it overlapped text — a same-shaped triangle clear of
 text would stay.
+
+## 23. v29r — reconciliation of the two parallel v29 sessions (2026-10-25)
+
+While this session verified its own v29 (80/80 modes, ~90 vision-checked
+pages) and committed locally, a SECOND session (CANVA-SSC clone) pushed
+its own v29 to origin/main (394a4ce: Hindi math orphans/tail rule,
+figure-gate writing-row clustering, keep-by-own-rect, Hindi paren fills,
+image-page whole-page guard, multipart upload UI in UPLOADS/). Neither
+build was a superset: this build failed Surds p26 (circle over c), b)
+cross-out, margin arrow) and Algebra p13/p19 (chained solution, red
+overlay on image-page); their build lacked per-colour chaining,
+badge keep, Stats p18 table colour, shift obstacles and the M3C4 p10
+small square.
+
+`reconcile-v29` merge: base = their 394a4ce (clean_for_canva.py, app.py
+upload UI, .gitignore UPLOADS/); ported on top of it from this session:
+per-colour chaining, ALL-non-footer-text group-overlap net with
+member-split (split restricted to BLACK groups — coloured working that
+merely crosses the option band must not be re-admitted through the
+split), small-black-<80 shape rule (>=3 long paths), black satellite
+labels (25pt), badge-image keep, grid-zone recolour skip, kept-figure
+shift obstacles (both plans share one dy; "ALL" sentinel caps nothing).
+
+Verification (r32): 20/20 regen OK; 80/80 four-mode runs OK; the UNION
+of both sessions' defect pages visually verified clean: M3C4 C4 p2/p3/
+p10, H&D p14, APGP p12/p27, Surds p22/p26/p32, Algebra p7/p13/p19/p24,
+Stats p3/p18; protected figures intact (M2D p13/p23, H&D p1, Geo p25,
+M3C3 p16/p22, Stats p5 histogram). Accepted residuals (both sessions
+converged): pen board sketches / working in the empty figure column
+(M3C4 p2 sphere sketch, p10 green "4sqrt17" beside the square, Geo p29
+scratch — figure-shaped, clear of text, no cheap rule separates them
+from pen-drawn question figures like H&D p1's reference triangles);
+Surds p26 tiny "1 1 1" fragments. LESS.md carries the merged rules.

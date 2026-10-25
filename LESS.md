@@ -55,3 +55,6 @@ TRIGGER: Hindi sentence's math row survives as ghost line → RULE: superscripts
 TRIGGER: question-number badge image deleted as pen image → RULE: keep any small image (≤45x26) left of the question column above the first option, regardless of pen-colour stats.
 TRIGGER: table header recoloured red by the question rule → RULE: lines whose centre is inside a table grid zone keep their original colour.
 TRIGGER: shifted options print over a kept pen figure → RULE: kept figure rects are shift obstacles, shared by both the text-surgery and drawing-shift plans (one dy).
+TRIGGER: two parallel fix sessions diverge on the same functions → RULE: reconcile on the pushed base, port only the unique fixes, and re-verify the UNION of both defect-page sets — neither build is a superset.
+TRIGGER: member-split re-admits the text-free top of coloured working whose group crosses the option band → RULE: the split mercy is BLACK groups only; a coloured group whose bbox covers text dies outright.
+TRIGGER: pen figures share the figure column with teacher board sketches → RULE: keep both (figure-shaped pen content clear of text); never trade a real figure for cosmetic working removal.
