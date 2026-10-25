@@ -266,3 +266,95 @@ Known minor gaps: M3 p16's small cone sketch still missing (no safe rule —
 any cluster distance catching it at 32pt also keeps Geo p14's working at
 11pt); Geo p24 header "Apollonius theorem ():" empty parens (cosmetic,
 user not yet answered); Stats p18 table headers render red by rule.
+
+## 21. Upload option (2026-10-25)
+
+`app.py` now accepts PDF uploads, not just selecting from the folder:
+- UI: "⬆ Upload PDF" button (file picker, accept=.pdf) beside the select in
+  card 1, plus drag-and-drop onto the "Choose PDF" card. After upload the
+  list refreshes and the new file is auto-selected; status shown inline
+  (.upmsg ok/err).
+- New endpoint `POST /api/upload?name=<filename>` (raw PDF bytes as the
+  request body — avoids multipart parsing): basename + Windows-forbidden-char
+  sanitization, .pdf extension required, `%PDF` magic check in first 1024
+  bytes, 200 MB cap, auto-rename on collision (`name (1).pdf`) so existing
+  folder files are never overwritten.
+- Uploaded files land in `PDFS TO CLEAN\`, so `/api/clean` and
+  `/api/download` work unchanged.
+- Verified via scripted endpoints test: upload, duplicate auto-rename,
+  .txt and fake-pdf rejection, list refresh, end-to-end clean of an uploaded
+  file (34 pages OK), test artifacts removed.
+
+## 22. v29 — the 6-defect fix round (2026-10-25, user Canva reports)
+
+User reported (via 6 canva.link designs, 2 named): Mensuration 3D C4 "so
+many problems in options and questions"; Height & Distance "issues in
+options"; others: "lines over texts", "removed all options and showing
+markers but no actual texts", "answer and markers not even removed".
+Folder had grown to 20 PDFs (2 new: MATHS Coordinate Geometry 01, MATHS
+Discount 01 — never tested before).
+
+Diagnosis (audit script `_work/audit_r29.py` + ~90 side-by-side page
+renders viewed by vision): options/questions were textually fine on most
+flagged pages (MuPDF extraction artifacts; MEMORY §20 rule held), the REAL
+defects were:
+1. Pen annotations CHAINED to kept figures survived (per-colour failure):
+   M3C4 p3 red "2.5|8" + green circles on the ball figure; H&D p14 cyan
+   "√3=1.732" + 2↔1 arrows on the triangle; M3C4 p10 green "16/4√17/√11".
+2. Teacher working qualified as "figure" via the old all-colour 80x80
+   gate: APGP p12 purple option box (options then shifted ON TOP of it —
+   "lines over texts"), APGP p27 red arrow + underbrace + 25/2 formula.
+3. M3C4 p10's 46x54 square base figure REMOVED (<80x80, off-panel; every
+   version until now).
+4. Question-number badge images deleted by pen-image classifier (Stats p3
+   "23.", Algebra p17 "(16)").
+5. Stats p18 bilingual table header painted red by the question rule.
+6. Surds p22: the Hindi sentence's math row ("𝟐−𝒙𝟐+𝒙−𝟑𝟐=?") survived as
+   a ghost line (superscripts 4.2pt above the Hindi baseline — outside the
+   ±2pt window; the Calibri "?" is not a math font).
+
+v29 fixes in `clean_for_canva.py`:
+- `_ink_figure_rects` REWRITTEN: (a) chaining is PER COLOUR — an
+  annotation of another colour touching a figure no longer shares its
+  exemption; (b) a colour group qualifies with ≥2 long paths AND ≥80x80
+  OR ≥30% e1-panel with black long paths (v28) OR (v29b) <80 black shape
+  with ≥3 long paths; (c) a group whose bbox overlaps ANY non-footer text
+  line is teacher marking, never a figure (kills the purple box, answer
+  circles, margin arrows; verified: NO protected figure overlaps any text
+  span — M2D p13/p23, H&D p1/p14, M3C4 p2/p3/p10, Geo p25, M3C3 p16/p22);
+  (d) member-split: a group chained THROUGH the text area keeps its
+  distant core (the black square chained to a question-area underline via
+  bridging strokes comes back after dropping the overlapping members);
+  (e) small BLACK strokes within 25pt of a kept figure are its labels
+  (H&D p1's angle labels); small coloured ones are marks (stay removed).
+  The v29 closed-cycle test was measured EXACTLY BACKWARDS on real data
+  (square=False via a stray degree-1 internal stroke; dense glyph chains
+  =True) and was replaced in v29b — do not resurrect it.
+- `_delete_hindi_blocks` (c5): in the frag window (first_deva−8 .. first
+  opt), a block within 8pt of a DROPPED Hindi baseline, at/right of that
+  Hindi line's start−20pt, is Hindi-sentence content: delete on the Hindi
+  baseline (any font — catches the Calibri "?" and Geo p24's "()"), and
+  above it when math-set or ≤4 units (catches the 𝟐 superscripts).
+- Badge images KEPT: any small image (≤45x26) left of the question column,
+  above the first option, survives regardless of pen stats (supersedes
+  §19's by-design removal — questions must stay complete).
+- `_surgery_page`: lines inside table grid zones keep their original
+  colour (Stats p18 header).
+- `_row_shift_plan(..., extra_obstacles)`: kept pen figures cap option
+  shifts like text obstacles (both call sites — surgery + drawing shift —
+  share one plan).
+- Upload option added earlier this session (§21) untouched and re-tested.
+
+Verification (r31): 20/20 regenerate OK; fresh audit — no MISSING option
+labels, no new OVERLAPS, PEN-IMAGES = kept badges only; ~90 side-by-side
+page renders visually verified clean: ALL of M3C4 (24p) and H&D (28p),
+all 8 previously-defective pages, all audit-heavy pages (Geo p15/p16/p17,
+Equation p11, CG-01 p14/p28, PC p23, Algebra p22, Discount p7/p22/p34),
+2-3 samples of every other file incl. protected figures (M2D p13/p23,
+Stats p5 histogram, DI p1 pie+table, M3C3 p16/p22/p26, Trig p5/p19,
+CG-03 p10/p30, Surds2 p15, Surds03 p8, NumberSystem p5). Residuals
+accepted: teacher board sketches kept as figures (M3C4 p2 sphere sketch
+with "8:1" — same class as H&D p1 reference triangles; no safe rule),
+occasional tiny pen specks near kept figures, M3C4 p10's green triangle
+gone only because it overlapped text — a same-shaped triangle clear of
+text would stay.

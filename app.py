@@ -30,6 +30,15 @@ HTML = r"""<!DOCTYPE html>
   .card{background:#181c27;border:1px solid #2a3040;border-radius:12px;padding:20px;margin-bottom:16px}
   .card h2{font-size:1rem;margin-bottom:12px;color:#c9d1e0}
   select{width:100%;padding:10px 12px;background:#0f1117;color:#e8eaf0;border:1px solid #3a4258;border-radius:8px;font-size:.95rem}
+  .row{display:flex;gap:10px}
+  .row select{flex:1}
+  .upbtn{display:flex;align-items:center;padding:10px 14px;background:#232938;color:#c9d1e0;border:1px dashed #3a4258;border-radius:8px;cursor:pointer;font-size:.9rem;white-space:nowrap}
+  .upbtn:hover{border-color:#7dd3fc;color:#e0f2fe}
+  .upbtn.busy{opacity:.6;cursor:wait}
+  #pickCard.drag{border-color:#7dd3fc}
+  .upmsg{display:none;margin-top:8px;font-size:.85rem}
+  .upmsg.ok{display:block;color:#86efac}
+  .upmsg.err{display:block;color:#fca5a5}
   .opts{display:flex;flex-direction:column;gap:10px}
   .opt{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#0f1117;border:1px solid #2a3040;border-radius:8px;cursor:pointer}
   .opt:hover{border-color:#7dd3fc55}
@@ -58,10 +67,14 @@ HTML = r"""<!DOCTYPE html>
   <h1>Canva PDF Cleaner</h1>
   <p class="sub">Fixes text overlap when uploading to Canva. Optionally removes handwriting &amp; watermarks.</p>
 
-  <div class="card">
+  <div class="card" id="pickCard">
     <h2>1. Choose PDF</h2>
-    <select id="pdf"></select>
+    <div class="row">
+      <select id="pdf"></select>
+      <label class="upbtn" id="upbtn">⬆ Upload PDF<input type="file" id="upfile" accept="application/pdf,.pdf" hidden></label>
+    </div>
     <p class="count" id="count"></p>
+    <p class="upmsg" id="upmsg"></p>
   </div>
 
   <div class="card">
@@ -115,14 +128,61 @@ const go = document.getElementById('go');
 const st = document.getElementById('status');
 const dl = document.getElementById('dl');
 const dlLink = document.getElementById('dlLink');
+const pickCard = document.getElementById('pickCard');
+const upbtn = document.getElementById('upbtn');
+const upfile = document.getElementById('upfile');
+const upmsg = document.getElementById('upmsg');
 
-async function loadList() {
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+async function loadList(selectName) {
   const r = await fetch('/api/list');
   const files = await r.json();
-  sel.innerHTML = files.map(f => `<option value="${encodeURIComponent(f)}">${f}</option>`).join('');
+  sel.innerHTML = files.map(f => `<option value="${encodeURIComponent(f)}">${esc(f)}</option>`).join('');
   cnt.textContent = files.length + ' PDF(s) in PDFS TO CLEAN folder';
+  if (selectName) {
+    const enc = encodeURIComponent(selectName);
+    if ([...sel.options].some(o => o.value === enc)) sel.value = enc;
+  }
 }
 loadList();
+
+function setUpMsg(text, cls) {
+  upmsg.textContent = text;
+  upmsg.className = cls ? 'upmsg ' + cls : 'upmsg';
+}
+
+async function uploadPdf(file) {
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name)) {
+    setUpMsg('Not a PDF: ' + file.name, 'err');
+    return;
+  }
+  setUpMsg('Uploading ' + file.name + '…');
+  upbtn.classList.add('busy');
+  try {
+    const r = await fetch('/api/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    await loadList(j.saved);
+    setUpMsg('Uploaded as "' + j.saved + '" — selected below.', 'ok');
+  } catch (e) {
+    setUpMsg('Upload failed: ' + e.message, 'err');
+  } finally {
+    upbtn.classList.remove('busy');
+  }
+}
+upfile.onchange = () => { uploadPdf(upfile.files[0]); upfile.value = ''; };
+
+['dragover', 'dragenter'].forEach(ev => pickCard.addEventListener(ev, e => {
+  e.preventDefault();
+  pickCard.classList.add('drag');
+}));
+['dragleave', 'drop'].forEach(ev => pickCard.addEventListener(ev, e => {
+  e.preventDefault();
+  pickCard.classList.remove('drag');
+}));
+pickCard.addEventListener('drop', e => uploadPdf(e.dataTransfer.files[0]));
 
 function setPreset(all) {
   pAll.classList.toggle('active', all);
@@ -211,8 +271,45 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not found")
 
+    MAX_UPLOAD = 200 * 1024 * 1024
+
+    def _handle_upload(self, q):
+        name = unquote(q.get("name", [""])[0])
+        safe = os.path.basename(name.replace("\\", "/"))
+        for ch in '<>:"|?*':  # characters Windows forbids in file names
+            safe = safe.replace(ch, "_")
+        if not safe or not safe.lower().endswith(".pdf"):
+            self._json({"error": "Only .pdf files can be uploaded"})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            self._json({"error": "Empty upload"})
+            return
+        if length > self.MAX_UPLOAD:
+            self._json({"error": "File too large (max 200 MB)"})
+            return
+        head = self.rfile.read(min(length, 1024))
+        if b"%PDF" not in head:
+            self._json({"error": "Not a valid PDF file"})
+            return
+        rest = self.rfile.read(length - len(head))
+        stem, ext = os.path.splitext(safe)
+        candidate = safe
+        n = 1
+        while os.path.exists(os.path.join(PDF_DIR, candidate)):
+            candidate = f"{stem} ({n}){ext}"
+            n += 1
+        os.makedirs(PDF_DIR, exist_ok=True)
+        with open(os.path.join(PDF_DIR, candidate), "wb") as f:
+            f.write(head + rest)
+        self._json({"ok": True, "saved": candidate})
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/clean":
+        path = urlparse(self.path).path
+        if path == "/api/upload":
+            self._handle_upload(parse_qs(urlparse(self.path).query))
+            return
+        if path != "/api/clean":
             self._send(404, b"Not found")
             return
         length = int(self.headers.get("Content-Length", 0))
